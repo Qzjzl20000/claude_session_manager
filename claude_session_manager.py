@@ -90,6 +90,28 @@ class SessionData:
                         continue
         return messages
 
+    def get_session_title(self, session_id: str, project_path: str) -> str:
+        """获取会话名称（customTitle）"""
+        conv_file = self.get_conversation_file(session_id, project_path)
+        if not conv_file.exists():
+            return None
+
+        try:
+            with open(conv_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            msg = json.loads(line)
+                            # 查找 customTitle 字段
+                            if msg.get('customTitle'):
+                                return msg.get('customTitle')
+                        except json.JSONDecodeError:
+                            continue
+        except Exception:
+            pass
+        return None
+
     def format_size(self, size: int) -> str:
         """格式化文件大小"""
         if size < 1024:
@@ -574,9 +596,14 @@ class SessionManagerApp:
             timestamp = session.get('timestamp', 0)
             project_full = session.get('project', 'N/A')  # 完整路径用于计算文件大小
 
-            # 简化显示
-            if len(display) > 45:
-                display = display[:42] + "..."
+            # 优先显示会话名称（customTitle），如果没有则使用 display
+            session_title = self.data.get_session_title(session_id, project_full)
+            if session_title:
+                display = session_title
+            else:
+                # 简化显示
+                if len(display) > 45:
+                    display = display[:42] + "..."
             project_display = project_full
             if len(project_display) > 35:
                 project_display = "..." + project_display[-32:]
