@@ -91,10 +91,13 @@ class SessionData:
         return messages
 
     def get_session_title(self, session_id: str, project_path: str) -> str:
-        """获取会话名称（customTitle）"""
+        """获取会话名称（优先 customTitle，否则第一条用户消息）"""
         conv_file = self.get_conversation_file(session_id, project_path)
         if not conv_file.exists():
             return None
+
+        custom_title = None
+        first_user_message = None
 
         try:
             with open(conv_file, 'r', encoding='utf-8') as f:
@@ -105,11 +108,25 @@ class SessionData:
                             msg = json.loads(line)
                             # 查找 customTitle 字段
                             if msg.get('customTitle'):
-                                return msg.get('customTitle')
+                                custom_title = msg.get('customTitle')
+                                return custom_title
+                            # 查找第一条用户消息
+                            if first_user_message is None:
+                                if msg.get('type') == 'user' and msg.get('userType') == 'external':
+                                    message_obj = msg.get('message', {})
+                                    if message_obj:
+                                        content = message_obj.get('content', '')
+                                        if isinstance(content, str) and content.strip():
+                                            first_user_message = content.strip()
                         except json.JSONDecodeError:
                             continue
         except Exception:
             pass
+
+        # 如果没有 customTitle，返回第一条用户消息
+        if first_user_message:
+            return first_user_message
+
         return None
 
     def format_size(self, size: int) -> str:
@@ -953,16 +970,57 @@ class SessionManagerApp:
 
     def cleanup_orphaned(self):
         """清理无索引数据"""
-        result = messagebox.askyesno("清理无索引数据",
-                                     "这将删除所有无 history.jsonl 索引指向的文件：\n\n"
-                                     "- Debug 日志文件\n"
-                                     "- 对话数据文件\n"
-                                     "- Session 环境目录\n"
-                                     "- 文件历史目录\n"
-                                     "- Todo 文件\n"
-                                     "- 空的项目目录\n\n"
-                                     "确定要继续吗？",
-                                     icon="warning")
+        valid_session_ids = self.data.get_all_session_ids()
+        valid_count = len(valid_session_ids)
+
+        # 统计将要删除的文件
+        orphaned_debug = 0
+        orphaned_conv = 0
+        orphaned_env = 0
+        orphaned_hist = 0
+        orphaned_todos = 0
+
+        for f in self.data.debug_dir.glob("*.txt"):
+            if f.stem not in valid_session_ids:
+                orphaned_debug += 1
+
+        for d in self.data.session_env_dir.iterdir():
+            if d.is_dir() and d.name not in valid_session_ids:
+                orphaned_env += 1
+
+        for project_dir in self.data.projects_dir.iterdir():
+            if project_dir.is_dir():
+                for f in project_dir.glob("*.jsonl"):
+                    if f.stem not in valid_session_ids:
+                        orphaned_conv += 1
+
+        if self.data.file_history_dir.exists():
+            for d in self.data.file_history_dir.iterdir():
+                if d.is_dir() and d.name not in valid_session_ids:
+                    orphaned_hist += 1
+
+        if self.data.todos_dir.exists():
+            for f in self.data.todos_dir.glob("*-*.json"):
+                parts = f.stem.split('-')
+                if parts and parts[0] not in valid_session_ids:
+                    orphaned_todos += 1
+
+        result = messagebox.askyesno(
+            "清理无索引数据",
+            f"⚠️ 警告：此操作将删除所有不在 history.jsonl 中的文件！\n\n"
+            f"📊 当前状态：\n"
+            f"  有效索引会话: {valid_count} 个\n"
+            f"  将删除 Debug: {orphaned_debug} 个\n"
+            f"  将删除对话文件: {orphaned_conv} 个\n"
+            f"  将删除 Session环境: {orphaned_env} 个\n"
+            f"  将删除文件历史: {orphaned_hist} 个\n"
+            f"  将删除 Todo: {orphaned_todos} 个\n\n"
+            f"❗ 重要提示：\n"
+            f"  • 如果您之前手动删除过 history.jsonl 的内容\n"
+            f"    此操作可能会删除正在使用的会话数据！\n\n"
+            f"  • 建议先备份 ~/.claude 目录\n\n"
+            f"确定要继续吗？",
+            icon="warning")
 
         if not result:
             return

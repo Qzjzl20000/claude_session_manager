@@ -111,20 +111,28 @@ python claude_session_manager.py
 | macOS / Linux | `~/.claude/` |
 | Windows | `%USERPROFILE%\.claude\` |
 
-### 目录结构
+📖 **详细了解 Claude Code 的数据结构和索引规则，请查看 [CLAUDE_DATA_STRUCTURE.md](CLAUDE_DATA_STRUCTURE.md)**
+
+### 目录结构概览
 
 ```
 ~/.claude/
-├── history.jsonl          # 会话索引
+├── history.jsonl          # 会话索引（核心）
 ├── projects/              # 对话数据
-│   └── [项目路径]/
+│   └── [编码后的项目路径]/
 │       └── [SessionID].jsonl
 ├── debug/                 # 调试日志
-│   └── [SessionID].txt
 ├── session-env/           # Session 环境
 ├── file-history/          # 文件历史
 └── todos/                 # Todo 记录
 ```
+
+### 关键概念
+
+- **SessionID**: UUID 格式的会话唯一标识
+- **Project**: Claude Code 工作目录路径
+- **会话名称**: 优先显示 `/rename` 设置的名称，否则显示第一条用户消息
+- **索引规则**: `history.jsonl` 记录所有会话索引，每次用户输入都会追加记录
 
 ## 使用场景
 
