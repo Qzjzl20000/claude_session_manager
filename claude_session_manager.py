@@ -112,12 +112,16 @@ class SessionData:
                                 return custom_title
                             # 查找第一条用户消息
                             if first_user_message is None:
-                                if msg.get('type') == 'user' and msg.get('userType') == 'external':
+                                if msg.get('type') == 'user' and msg.get(
+                                        'userType') == 'external':
                                     message_obj = msg.get('message', {})
                                     if message_obj:
-                                        content = message_obj.get('content', '')
-                                        if isinstance(content, str) and content.strip():
-                                            first_user_message = content.strip()
+                                        content = message_obj.get(
+                                            'content', '')
+                                        if isinstance(content,
+                                                      str) and content.strip():
+                                            first_user_message = content.strip(
+                                            )
                         except json.JSONDecodeError:
                             continue
         except Exception:
@@ -614,7 +618,8 @@ class SessionManagerApp:
             project_full = session.get('project', 'N/A')  # 完整路径用于计算文件大小
 
             # 优先显示会话名称（customTitle），如果没有则使用 display
-            session_title = self.data.get_session_title(session_id, project_full)
+            session_title = self.data.get_session_title(
+                session_id, project_full)
             if session_title:
                 display = session_title
             else:
@@ -1006,8 +1011,7 @@ class SessionManagerApp:
                     orphaned_todos += 1
 
         result = messagebox.askyesno(
-            "清理无索引数据",
-            f"⚠️ 警告：此操作将删除所有不在 history.jsonl 中的文件！\n\n"
+            "清理无索引数据", f"⚠️ 警告：此操作将删除所有不在 history.jsonl 中的文件！\n\n"
             f"📊 当前状态：\n"
             f"  有效索引会话: {valid_count} 个\n"
             f"  将删除 Debug: {orphaned_debug} 个\n"
