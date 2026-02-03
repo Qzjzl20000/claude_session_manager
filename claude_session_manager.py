@@ -931,25 +931,199 @@ class SessionManagerApp:
         self.checked_sessions.clear()
         self.update_selected_count()
 
+    def collect_deletion_preview(self, session_id: str,
+                                 project_path: str) -> dict:
+        """收集会话删除预览信息"""
+        preview = {
+            'session_id': session_id,
+            'project_path': project_path,
+            'files': [],
+            'dirs': [],
+            'total_size': 0
+        }
+
+        # 1. 对话文件
+        conv_file = self.data.get_conversation_file(session_id, project_path)
+        if conv_file.exists():
+            size = conv_file.stat().st_size
+            preview['files'].append({
+                'path': str(conv_file),
+                'size': size,
+                'type': '对话文件'
+            })
+            preview['total_size'] += size
+
+        # 2. Debug 文件
+        debug_file = self.data.debug_dir / f"{session_id}.txt"
+        if debug_file.exists():
+            size = debug_file.stat().st_size
+            preview['files'].append({
+                'path': str(debug_file),
+                'size': size,
+                'type': 'Debug 日志'
+            })
+            preview['total_size'] += size
+
+        # 3. Session-env 目录
+        session_env = self.data.session_env_dir / session_id
+        if session_env.exists() and session_env.is_dir():
+            size = sum(f.stat().st_size for f in session_env.rglob('*')
+                       if f.is_file())
+            preview['dirs'].append({
+                'path': str(session_env),
+                'size': size,
+                'type': 'Session 环境'
+            })
+            preview['total_size'] += size
+
+        # 4. File-history 目录
+        file_hist = self.data.file_history_dir / session_id
+        if file_hist.exists() and file_hist.is_dir():
+            size = sum(f.stat().st_size for f in file_hist.rglob('*')
+                       if f.is_file())
+            preview['dirs'].append({
+                'path': str(file_hist),
+                'size': size,
+                'type': '文件历史'
+            })
+            preview['total_size'] += size
+
+        # 5. Todo 文件
+        if self.data.todos_dir.exists():
+            for todo_file in self.data.todos_dir.glob(f"{session_id}-*.json"):
+                size = todo_file.stat().st_size
+                preview['files'].append({
+                    'path': str(todo_file),
+                    'size': size,
+                    'type': 'Todo 记录'
+                })
+                preview['total_size'] += size
+
+        return preview
+
+    def show_deletion_preview_dialog(self, previews: list) -> bool:
+        """显示删除预览对话框"""
+        # 创建预览窗口
+        preview_window = tk.Toplevel(self.root)
+        preview_window.title("删除预览")
+        preview_window.geometry("900x600")
+        preview_window.transient(self.root)
+        preview_window.grab_set()
+
+        # 顶部警告信息
+        header_frame = ttk.Frame(preview_window, padding=10)
+        header_frame.pack(fill=tk.X)
+
+        ttk.Label(header_frame,
+                  text="⚠️ 即将删除以下文件",
+                  font=("", 14, "bold"),
+                  foreground="#cc0000").pack()
+
+        # 统计信息
+        total_files = sum(len(p['files']) for p in previews)
+        total_dirs = sum(len(p['dirs']) for p in previews)
+        total_size = sum(p['total_size'] for p in previews)
+
+        stats_frame = ttk.Frame(preview_window, padding=10)
+        stats_frame.pack(fill=tk.X)
+
+        ttk.Label(
+            stats_frame,
+            text=
+            f"会话数: {len(previews)} | 文件数: {total_files} | 目录数: {total_dirs} | 总大小: {self.data.format_size(total_size)}",
+            font=("", 11)).pack()
+
+        # 文件列表（使用 ScrolledText）
+        text_frame = ttk.Frame(preview_window, padding=10)
+        text_frame.pack(fill=tk.BOTH, expand=True)
+
+        text = scrolledtext.ScrolledText(text_frame,
+                                         font=("Courier", 10),
+                                         wrap=tk.NONE,
+                                         padx=10,
+                                         pady=10)
+        text.pack(fill=tk.BOTH, expand=True)
+
+        # 配置标签样式
+        text.tag_config("session_header",
+                        foreground="#0066cc",
+                        font=("", 11, "bold"))
+        text.tag_config("file_path", foreground="#333333")
+        text.tag_config("dir_path", foreground="#008800")
+        text.tag_config("file_size", foreground="#666666")
+        text.tag_config("warning", foreground="#cc0000", font=("", 10, "bold"))
+
+        # 插入内容
+        for idx, preview in enumerate(previews, 1):
+            session_id = preview['session_id']
+            project_path = preview['project_path']
+
+            text.insert(tk.END, f"\n{'='*80}\n\n", "session_header")
+            text.insert(tk.END, f"会话 {idx}/{len(previews)}\n",
+                        "session_header")
+            text.insert(tk.END, f"Session ID: {session_id}\n", "file_path")
+            text.insert(tk.END, f"项目路径: {project_path}\n", "file_path")
+            text.insert(
+                tk.END,
+                f"总大小: {self.data.format_size(preview['total_size'])}\n\n",
+                "file_size")
+
+            # 文件
+            if preview['files']:
+                text.insert(tk.END, "  📄 文件:\n", "file_path")
+                for f in preview['files']:
+                    text.insert(tk.END, f"    [{f['type']}] {f['path']}",
+                                "file_path")
+                    text.insert(tk.END,
+                                f" ({self.data.format_size(f['size'])})\n",
+                                "file_size")
+
+            # 目录
+            if preview['dirs']:
+                text.insert(tk.END, "  📁 目录:\n", "dir_path")
+                for d in preview['dirs']:
+                    text.insert(tk.END, f"    [{d['type']}] {d['path']}",
+                                "dir_path")
+                    text.insert(tk.END,
+                                f" ({self.data.format_size(d['size'])})\n",
+                                "file_size")
+
+            text.insert(tk.END, "\n")
+
+        text.config(state="disabled")
+        text.see(1.0)
+
+        # 底部按钮
+        button_frame = ttk.Frame(preview_window, padding=10)
+        button_frame.pack(fill=tk.X)
+
+        # 存储用户选择结果
+        result = {'confirmed': False}
+
+        def on_confirm():
+            result['confirmed'] = True
+            preview_window.destroy()
+
+        def on_cancel():
+            result['confirmed'] = False
+            preview_window.destroy()
+
+        ttk.Button(button_frame, text="❌ 取消",
+                   command=on_cancel).pack(side=tk.RIGHT, padx=5)
+
+        ttk.Button(button_frame, text="🗑️ 确认删除",
+                   command=on_confirm).pack(side=tk.RIGHT, padx=5)
+
+        # 等待窗口关闭
+        preview_window.wait_window()
+        return result['confirmed']
+
     def delete_selected(self):
         """删除选中的会话"""
         if not self.checked_sessions:
             return
 
-        count = len(self.checked_sessions)
-        result = messagebox.askyesno("确认删除", f"确定要删除选中的 {count} 个会话吗？\n\n"
-                                     f"将删除所有相关文件：\n"
-                                     f"- 对话数据文件\n"
-                                     f"- Debug 日志\n"
-                                     f"- Session 环境\n"
-                                     f"- 文件历史\n"
-                                     f"- Todo 记录\n\n"
-                                     f"此操作不可恢复！",
-                                     icon="warning")
-
-        if not result:
-            return
-
+        # 收集所有要删除的会话信息
         to_delete = []
         for item, session_id in list(self.checked_sessions.items()):
             session = next((s for s in self.current_sessions
@@ -957,6 +1131,17 @@ class SessionManagerApp:
             if session:
                 to_delete.append((session_id, session.get('project', 'N/A')))
 
+        # 收集删除预览信息
+        previews = []
+        for session_id, project_path in to_delete:
+            preview = self.collect_deletion_preview(session_id, project_path)
+            previews.append(preview)
+
+        # 显示预览对话框
+        if not self.show_deletion_preview_dialog(previews):
+            return
+
+        # 执行删除
         deleted = 0
         failed = 0
         for session_id, project_path in to_delete:
@@ -973,66 +1158,314 @@ class SessionManagerApp:
             "删除完成",
             f"成功删除: {deleted} 个\n" + (f"失败: {failed} 个" if failed > 0 else ""))
 
+    def collect_orphaned_files_preview(self) -> dict:
+        """收集无索引文件的预览信息"""
+        valid_session_ids = self.data.get_all_session_ids()
+
+        preview = {
+            'debug_files': [],
+            'conversation_files': [],
+            'session_envs': [],
+            'file_histories': [],
+            'todos': [],
+            'total_size': 0
+        }
+
+        # 1. Debug 文件
+        for f in self.data.debug_dir.glob("*.txt"):
+            sid = f.stem
+            if sid not in valid_session_ids:
+                size = f.stat().st_size
+                preview['debug_files'].append({
+                    'path': str(f),
+                    'size': size,
+                    'session_id': sid
+                })
+                preview['total_size'] += size
+
+        # 2. 对话文件
+        for project_dir in self.data.projects_dir.iterdir():
+            if project_dir.is_dir():
+                for f in project_dir.glob("*.jsonl"):
+                    sid = f.stem
+                    if sid not in valid_session_ids:
+                        size = f.stat().st_size
+                        preview['conversation_files'].append({
+                            'path': str(f),
+                            'size': size,
+                            'session_id': sid
+                        })
+                        preview['total_size'] += size
+
+        # 3. Session-env 目录
+        for d in self.data.session_env_dir.iterdir():
+            if d.is_dir():
+                sid = d.name
+                if sid not in valid_session_ids:
+                    size = sum(f.stat().st_size for f in d.rglob('*')
+                               if f.is_file())
+                    preview['session_envs'].append({
+                        'path': str(d),
+                        'size': size,
+                        'session_id': sid
+                    })
+                    preview['total_size'] += size
+
+        # 4. File-history 目录
+        if self.data.file_history_dir.exists():
+            for d in self.data.file_history_dir.iterdir():
+                if d.is_dir():
+                    sid = d.name
+                    if sid not in valid_session_ids:
+                        size = sum(f.stat().st_size for f in d.rglob('*')
+                                   if f.is_file())
+                        preview['file_histories'].append({
+                            'path': str(d),
+                            'size': size,
+                            'session_id': sid
+                        })
+                        preview['total_size'] += size
+
+        # 5. Todo 文件
+        if self.data.todos_dir.exists():
+            for f in self.data.todos_dir.glob("*-*.json"):
+                parts = f.stem.split('-')
+                if parts:
+                    sid = parts[0]
+                    if sid not in valid_session_ids:
+                        size = f.stat().st_size
+                        preview['todos'].append({
+                            'path': str(f),
+                            'size': size,
+                            'session_id': sid
+                        })
+                        preview['total_size'] += size
+
+        return preview
+
+    def show_cleanup_preview_dialog(self, preview: dict,
+                                    valid_count: int) -> bool:
+        """显示清理预览对话框"""
+        # 创建预览窗口
+        preview_window = tk.Toplevel(self.root)
+        preview_window.title("清理无索引数据 - 预览")
+        preview_window.geometry("1000x700")
+        preview_window.transient(self.root)
+        preview_window.grab_set()
+
+        # 顶部警告信息
+        header_frame = ttk.Frame(preview_window, padding=10)
+        header_frame.pack(fill=tk.X)
+
+        ttk.Label(header_frame,
+                  text="⚠️ 危险操作 - 即将删除无索引文件",
+                  font=("", 14, "bold"),
+                  foreground="#cc0000").pack()
+
+        # 统计信息
+        total_items = (len(preview['debug_files']) +
+                       len(preview['conversation_files']) +
+                       len(preview['session_envs']) +
+                       len(preview['file_histories']) + len(preview['todos']))
+
+        stats_frame = ttk.Frame(preview_window, padding=10)
+        stats_frame.pack(fill=tk.X)
+
+        stats_text = (f"有效索引会话: {valid_count} 个 | "
+                      f"将删除: {total_items} 项 | "
+                      f"总大小: {self.data.format_size(preview['total_size'])}")
+        ttk.Label(stats_frame, text=stats_text, font=("", 11)).pack()
+
+        # 安全警告
+        warning_frame = ttk.Frame(preview_window, padding=10)
+        warning_frame.pack(fill=tk.X)
+
+        warning_text = ("❗ 重要安全警告：\n"
+                        "  • 此操作将删除所有不在 history.jsonl 索引中的文件\n"
+                        "  • 如果您之前手动编辑过 history.jsonl，可能误删正在使用的会话\n"
+                        "  • 建议先备份 ~/.claude 目录\n"
+                        "  • 删除后将无法恢复文件")
+        ttk.Label(warning_frame,
+                  text=warning_text,
+                  foreground="#cc6600",
+                  justify=tk.LEFT).pack()
+
+        # 文件列表
+        text_frame = ttk.Frame(preview_window, padding=10)
+        text_frame.pack(fill=tk.BOTH, expand=True)
+
+        text = scrolledtext.ScrolledText(text_frame,
+                                         font=("Courier", 10),
+                                         wrap=tk.NONE,
+                                         padx=10,
+                                         pady=10)
+        text.pack(fill=tk.BOTH, expand=True)
+
+        # 配置标签样式
+        text.tag_config("category",
+                        foreground="#0066cc",
+                        font=("", 11, "bold"))
+        text.tag_config("file_path", foreground="#333333")
+        text.tag_config("session_id", foreground="#666666")
+        text.tag_config("file_size", foreground="#999999")
+        text.tag_config("warning", foreground="#cc0000")
+
+        # 插入内容
+        text.insert(tk.END, "\n" + "=" * 90 + "\n\n", "category")
+
+        # Debug 文件
+        if preview['debug_files']:
+            text.insert(tk.END,
+                        f"🐛 Debug 文件 ({len(preview['debug_files'])} 项)\n\n",
+                        "category")
+            for item in preview['debug_files'][:50]:  # 限制显示数量
+                text.insert(tk.END, f"  [{item['session_id'][:20]}...]",
+                            "session_id")
+                text.insert(tk.END, f" {item['path']}\n", "file_path")
+                text.insert(
+                    tk.END, f"    大小: {self.data.format_size(item['size'])}\n",
+                    "file_size")
+            if len(preview['debug_files']) > 50:
+                text.insert(
+                    tk.END, f"  ... 还有 {len(preview['debug_files']) - 50} 项\n",
+                    "warning")
+            text.insert(tk.END, "\n")
+
+        # 对话文件
+        if preview['conversation_files']:
+            text.insert(
+                tk.END, f"💬 对话文件 ({len(preview['conversation_files'])} 项)\n\n",
+                "category")
+            for item in preview['conversation_files'][:50]:
+                text.insert(tk.END, f"  [{item['session_id'][:20]}...]",
+                            "session_id")
+                text.insert(tk.END, f" {item['path']}\n", "file_path")
+                text.insert(
+                    tk.END, f"    大小: {self.data.format_size(item['size'])}\n",
+                    "file_size")
+            if len(preview['conversation_files']) > 50:
+                text.insert(
+                    tk.END,
+                    f"  ... 还有 {len(preview['conversation_files']) - 50} 项\n",
+                    "warning")
+            text.insert(tk.END, "\n")
+
+        # Session-env 目录
+        if preview['session_envs']:
+            text.insert(
+                tk.END, f"📦 Session 环境 ({len(preview['session_envs'])} 项)\n\n",
+                "category")
+            for item in preview['session_envs'][:30]:
+                text.insert(tk.END, f"  [{item['session_id'][:20]}...]",
+                            "session_id")
+                text.insert(tk.END, f" {item['path']}\n", "file_path")
+                text.insert(
+                    tk.END, f"    大小: {self.data.format_size(item['size'])}\n",
+                    "file_size")
+            if len(preview['session_envs']) > 30:
+                text.insert(
+                    tk.END,
+                    f"  ... 还有 {len(preview['session_envs']) - 30} 项\n",
+                    "warning")
+            text.insert(tk.END, "\n")
+
+        # File-history 目录
+        if preview['file_histories']:
+            text.insert(tk.END,
+                        f"📜 文件历史 ({len(preview['file_histories'])} 项)\n\n",
+                        "category")
+            for item in preview['file_histories'][:30]:
+                text.insert(tk.END, f"  [{item['session_id'][:20]}...]",
+                            "session_id")
+                text.insert(tk.END, f" {item['path']}\n", "file_path")
+                text.insert(
+                    tk.END, f"    大小: {self.data.format_size(item['size'])}\n",
+                    "file_size")
+            if len(preview['file_histories']) > 30:
+                text.insert(
+                    tk.END,
+                    f"  ... 还有 {len(preview['file_histories']) - 30} 项\n",
+                    "warning")
+            text.insert(tk.END, "\n")
+
+        # Todo 文件
+        if preview['todos']:
+            text.insert(tk.END, f"📝 Todo 文件 ({len(preview['todos'])} 项)\n\n",
+                        "category")
+            for item in preview['todos'][:30]:
+                text.insert(tk.END, f"  [{item['session_id'][:20]}...]",
+                            "session_id")
+                text.insert(tk.END, f" {item['path']}\n", "file_path")
+                text.insert(
+                    tk.END, f"    大小: {self.data.format_size(item['size'])}\n",
+                    "file_size")
+            if len(preview['todos']) > 30:
+                text.insert(tk.END,
+                            f"  ... 还有 {len(preview['todos']) - 30} 项\n",
+                            "warning")
+            text.insert(tk.END, "\n")
+
+        text.config(state="disabled")
+        text.see(1.0)
+
+        # 底部按钮
+        button_frame = ttk.Frame(preview_window, padding=10)
+        button_frame.pack(fill=tk.X)
+
+        # 存储用户选择结果
+        result = {'confirmed': False}
+
+        def on_confirm():
+            # 二次确认
+            confirm = messagebox.askyesno("最后确认", "⚠️ 您确定要删除这些文件吗？\n\n"
+                                          "此操作不可撤销！",
+                                          icon="warning")
+            if confirm:
+                result['confirmed'] = True
+                preview_window.destroy()
+
+        def on_cancel():
+            result['confirmed'] = False
+            preview_window.destroy()
+
+        ttk.Button(button_frame, text="❌ 取消",
+                   command=on_cancel).pack(side=tk.RIGHT, padx=5)
+
+        ttk.Button(button_frame, text="🗑️ 确认删除",
+                   command=on_confirm).pack(side=tk.RIGHT, padx=5)
+
+        # 等待窗口关闭
+        preview_window.wait_window()
+        return result['confirmed']
+
     def cleanup_orphaned(self):
         """清理无索引数据"""
         valid_session_ids = self.data.get_all_session_ids()
         valid_count = len(valid_session_ids)
 
-        # 统计将要删除的文件
-        orphaned_debug = 0
-        orphaned_conv = 0
-        orphaned_env = 0
-        orphaned_hist = 0
-        orphaned_todos = 0
+        # 收集无索引文件预览
+        preview = self.collect_orphaned_files_preview()
 
-        for f in self.data.debug_dir.glob("*.txt"):
-            if f.stem not in valid_session_ids:
-                orphaned_debug += 1
+        total_items = (len(preview['debug_files']) +
+                       len(preview['conversation_files']) +
+                       len(preview['session_envs']) +
+                       len(preview['file_histories']) + len(preview['todos']))
 
-        for d in self.data.session_env_dir.iterdir():
-            if d.is_dir() and d.name not in valid_session_ids:
-                orphaned_env += 1
-
-        for project_dir in self.data.projects_dir.iterdir():
-            if project_dir.is_dir():
-                for f in project_dir.glob("*.jsonl"):
-                    if f.stem not in valid_session_ids:
-                        orphaned_conv += 1
-
-        if self.data.file_history_dir.exists():
-            for d in self.data.file_history_dir.iterdir():
-                if d.is_dir() and d.name not in valid_session_ids:
-                    orphaned_hist += 1
-
-        if self.data.todos_dir.exists():
-            for f in self.data.todos_dir.glob("*-*.json"):
-                parts = f.stem.split('-')
-                if parts and parts[0] not in valid_session_ids:
-                    orphaned_todos += 1
-
-        result = messagebox.askyesno(
-            "清理无索引数据", f"⚠️ 警告：此操作将删除所有不在 history.jsonl 中的文件！\n\n"
-            f"📊 当前状态：\n"
-            f"  有效索引会话: {valid_count} 个\n"
-            f"  将删除 Debug: {orphaned_debug} 个\n"
-            f"  将删除对话文件: {orphaned_conv} 个\n"
-            f"  将删除 Session环境: {orphaned_env} 个\n"
-            f"  将删除文件历史: {orphaned_hist} 个\n"
-            f"  将删除 Todo: {orphaned_todos} 个\n\n"
-            f"❗ 重要提示：\n"
-            f"  • 如果您之前手动删除过 history.jsonl 的内容\n"
-            f"    此操作可能会删除正在使用的会话数据！\n\n"
-            f"  • 建议先备份 ~/.claude 目录\n\n"
-            f"确定要继续吗？",
-            icon="warning")
-
-        if not result:
+        # 如果没有文件需要清理
+        if total_items == 0:
+            messagebox.showinfo("清理无索引数据",
+                                "✅ 没有发现需要清理的无索引文件。\n\n所有文件都有有效的索引记录。")
             return
 
+        # 显示预览对话框
+        if not self.show_cleanup_preview_dialog(preview, valid_count):
+            return
+
+        # 执行清理
         cleanup_result = self.data.cleanup_orphaned_files()
 
         details = cleanup_result.get('details', [])
-        max_details = 20
+        max_details = 30
         details_text = "\n".join(details[:max_details])
         if len(details) > max_details:
             details_text += f"\n... 还有 {len(details) - max_details} 项"
