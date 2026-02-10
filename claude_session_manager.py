@@ -398,6 +398,93 @@ class SessionData:
 
         return [s['session'] for s in session_with_file_info]
 
+    def cleanup_old_snapshots(self, keep_count: int = 5) -> dict:
+        """清理旧的 shell-snapshot 文件，保留最新的 N 个"""
+        result = {
+            'total_snapshots': 0,
+            'deleted_snapshots': 0,
+            'kept_snapshots': 0,
+            'total_size_freed': 0,
+            'deleted_files': [],
+            'active_preserved': []
+        }
+
+        if not self.shell_snapshots_dir.exists():
+            return result
+
+        # 收集所有 snapshot 文件及其信息
+        snapshots = []
+        for f in self.shell_snapshots_dir.glob("snapshot-*.sh"):
+            # 解析文件名获取时间戳
+            # 格式: snapshot-<shell>-<timestamp>-<random_id>.sh
+            # 例如: snapshot-zsh-1770693564169-gre758.sh
+            match = re.search(r'snapshot-[^-]+-(\d+)-([^.]+)\.sh', f.name)
+            if match:
+                timestamp = int(match.group(1))
+                size = f.stat().st_size
+                snapshots.append({
+                    'file': f,
+                    'name': f.name,
+                    'timestamp': timestamp,
+                    'size': size
+                })
+
+        if not snapshots:
+            return result
+
+        result['total_snapshots'] = len(snapshots)
+
+        # 按时间戳排序（最新的在前）
+        snapshots.sort(key=lambda x: x['timestamp'], reverse=True)
+
+        # 分离活跃会话的 snapshot 和其他 snapshot
+        active_snapshots = []
+        other_snapshots = []
+
+        for snap in snapshots:
+            # 检查这个 snapshot 是否对应活跃会话
+            # 通过时间戳匹配（允许 ±30 秒误差）
+            is_active_snapshot = False
+            for session in self.sessions:
+                session_ts = session.get('timestamp', 0)
+                sid = session.get('sessionId', '')
+                if sid in self.active_session_ids:
+                    if abs(session_ts - snap['timestamp']) < 30000:  # 30秒内
+                        active_snapshots.append(snap)
+                        is_active_snapshot = True
+                        break
+
+            if not is_active_snapshot:
+                other_snapshots.append(snap)
+
+        # 活跃会话的 snapshot 全部保留
+        for snap in active_snapshots:
+            result['active_preserved'].append(snap['name'])
+            result['kept_snapshots'] += 1
+
+        # 其他 snapshot 保留最新的 keep_count 个
+        kept_other = min(keep_count, len(other_snapshots))
+        to_delete = other_snapshots[kept_other:]
+
+        # 删除旧 snapshot
+        for snap in to_delete:
+            try:
+                snap['file'].unlink()
+                result['deleted_snapshots'] += 1
+                result['total_size_freed'] += snap['size']
+                result['deleted_files'].append({
+                    'name': snap['name'],
+                    'size': snap['size'],
+                    'date': datetime.fromtimestamp(snap['timestamp'] / 1000).strftime('%Y-%m-%d %H:%M:%S')
+                })
+            except Exception as e:
+                result['error'] = str(e)
+
+        # 保留的 snapshot 计数
+        result['kept_snapshots'] += kept_other
+
+        return result
+
 
 # ============ GUI 界面 ============
 
@@ -490,6 +577,9 @@ class SessionManagerApp:
 
         ttk.Button(action_bar, text="🧹 清理无索引数据",
                    command=self.cleanup_orphaned).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(action_bar, text="📸 清理旧快照",
+                   command=self.cleanup_old_snapshots).pack(side=tk.LEFT, padx=5)
 
         # 页脚（需要在主内容之前 pack，以固定在底部）
         footer_frame = ttk.Frame(self.root)
@@ -1591,6 +1681,78 @@ class SessionManagerApp:
         self.load_data()
         messagebox.showinfo("清理完成", summary)
 
+    def cleanup_old_snapshots(self):
+        """清理旧的 shell-snapshot 文件"""
+        # 询问保留数量
+        keep_count = 5
+
+        # 先统计当前 snapshot 情况
+        snapshots_dir = self.data.shell_snapshots_dir
+        if not snapshots_dir.exists():
+            messagebox.showinfo("清理旧快照",
+                "✅ 没有发现 shell-snapshot 文件。\n\n目录不存在: " + str(snapshots_dir))
+            return
+
+        total_snapshots = len(list(snapshots_dir.glob("snapshot-*.sh")))
+        if total_snapshots == 0:
+            messagebox.showinfo("清理旧快照",
+                "✅ 没有发现需要清理的 snapshot 文件。")
+            return
+
+        # 计算活跃会话的 snapshot 数量
+        active_count = len(self.active_sessions)
+
+        # 显示确认对话框
+        result = messagebox.askyesno(
+            "清理旧快照",
+            f"📸 Shell Snapshot 清理\n\n"
+            f"当前状态:\n"
+            f"  总快照数: {total_snapshots} 个\n"
+            f"  活跃会话: {active_count} 个（对应快照将保留）\n\n"
+            f"清理规则:\n"
+            f"  • 保留所有活跃会话的快照\n"
+            f"  • 保留其他最新的 {keep_count} 个快照\n"
+            f"  • 删除其余旧快照\n\n"
+            f"⚠️ 删除后的快照无法恢复，确定要继续吗？",
+            icon="question"
+        )
+
+        if not result:
+            return
+
+        # 执行清理
+        cleanup_result = self.data.cleanup_old_snapshots(keep_count=keep_count)
+
+        # 构建结果消息
+        if cleanup_result.get('deleted_snapshots', 0) == 0:
+            messagebox.showinfo("清理完成",
+                f"✅ 没有需要清理的快照。\n\n"
+                f"当前快照: {cleanup_result.get('total_snapshots', 0)} 个\n"
+                f"全部保留: {cleanup_result.get('kept_snapshots', 0)} 个")
+            return
+
+        # 显示删除详情
+        deleted = cleanup_result.get('deleted_files', [])
+        details = ""
+        for f in deleted[:10]:
+            details += f"  • {f['date']} - {self.data.format_size(f['size'])}\n"
+        if len(deleted) > 10:
+            details += f"  ... 还有 {len(deleted) - 10} 个\n"
+
+        summary = f"""清理完成！
+
+已删除: {cleanup_result['deleted_snapshots']} 个快照
+保留: {cleanup_result['kept_snapshots']} 个快照
+  （包括 {len(cleanup_result.get('active_preserved', []))} 个活跃会话快照）
+
+释放空间: {self.data.format_size(cleanup_result['total_size_freed'])}
+
+删除详情:
+{details if details else '无'}
+"""
+
+        messagebox.showinfo("清理完成", summary)
+
     def is_local_command(self, display: str) -> bool:
         """判断是否是本地命令"""
         if not display:
@@ -2138,7 +2300,7 @@ def main():
     APP_TITLE = "Claude 会话管理器"
     WINDOW_GEOMETRY = "1200x700"
     DEVELOPER = "Qzjzl20000"
-    VERSION = "v2.3"
+    VERSION = "v2.4"
     FOOTER_HINT = "💡 双击对话可查看详情"
 
     root = tk.Tk()
