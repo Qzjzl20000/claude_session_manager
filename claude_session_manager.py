@@ -674,6 +674,9 @@ class SessionManagerApp:
             timestamp = session.get('timestamp', 0)
             project_full = session.get('project', 'N/A')  # 完整路径用于计算文件大小
 
+            # 检查是否是活跃会话
+            is_active = session_id in self.active_sessions
+
             # 优先显示会话名称（customTitle），如果没有则使用 display
             session_title = self.data.get_session_title(
                 session_id, project_full)
@@ -681,11 +684,11 @@ class SessionManagerApp:
                 display = session_title
             else:
                 # 简化显示
-                if len(display) > 45:
-                    display = display[:42] + "..."
+                if len(display) > 40:
+                    display = display[:37] + "..."
             project_display = project_full
-            if len(project_display) > 35:
-                project_display = "..." + project_display[-32:]
+            if len(project_display) > 30:
+                project_display = "..." + project_display[-27:]
 
             # 使用完整路径计算文件大小
             file_size = self.data.get_conversation_file_size(
@@ -693,6 +696,12 @@ class SessionManagerApp:
 
             # 检查是否是本地命令
             is_local_command = self.is_local_command(display)
+
+            # 状态列显示
+            if is_active:
+                status = "🟢 运行中"
+            else:
+                status = ""
 
             # 文件类型和文件大小显示
             if is_local_command:
@@ -708,16 +717,20 @@ class SessionManagerApp:
                 size_str = "-"
                 tags = ("no_data", )
 
+            # 活跃会话使用特殊标签
+            if is_active:
+                tags = ("active_session", )
+
             item_id = self.tree.insert(
                 "",
                 tk.END,
-                values=("☐", idx, display, file_type,
+                values=("🚫" if is_active else "☐", idx, status, display, file_type,
                         self.data.format_timestamp(timestamp), size_str,
                         project_display, session_id),
                 tags=tags)
 
-            # 恢复选中状态
-            if session_id in saved_checks.values():
+            # 恢复选中状态（仅非活跃会话）
+            if session_id in saved_checks.values() and not is_active:
                 self.tree.set(item_id, "check", "☑")
                 self.checked_sessions[item_id] = session_id
 
@@ -725,6 +738,8 @@ class SessionManagerApp:
         self.tree.tag_configure("has_data", foreground="black")
         self.tree.tag_configure("no_data", foreground="#999")
         self.tree.tag_configure("local_command", foreground="#228B22")  # 绿色
+        self.tree.tag_configure("active_session", foreground="#0066cc",
+                                background="#e6f3ff")  # 蓝色文字，浅蓝背景
 
         self.update_selected_count()
 
@@ -898,6 +913,14 @@ class SessionManagerApp:
         """切换指定项的选中状态"""
         current = self.tree.set(item, "check")
         session_id = self.tree.set(item, "session_id")
+        status = self.tree.set(item, "status")
+
+        # 活跃会话不允许选中
+        if "运行中" in status:
+            messagebox.showwarning("操作限制",
+                "⚠️ 该会话正在运行中，无法选中或删除。\n\n"
+                "请等待会话结束后再进行此操作。")
+            return
 
         if current == "☐":
             self.tree.set(item, "check", "☑")
@@ -974,11 +997,14 @@ class SessionManagerApp:
             self.toggle_check_for_item(selection[0])
 
     def select_all(self):
-        """全选"""
+        """全选（跳过活跃会话）"""
         for item in self.tree.get_children():
-            self.tree.set(item, "check", "☑")
-            session_id = self.tree.set(item, "session_id")
-            self.checked_sessions[item] = session_id
+            status = self.tree.set(item, "status")
+            # 跳过活跃会话
+            if "运行中" not in status:
+                self.tree.set(item, "check", "☑")
+                session_id = self.tree.set(item, "session_id")
+                self.checked_sessions[item] = session_id
         self.update_selected_count()
 
     def deselect_all(self):
@@ -1180,13 +1206,33 @@ class SessionManagerApp:
         if not self.checked_sessions:
             return
 
-        # 收集所有要删除的会话信息
+        # 收集所有要删除的会话信息，并检查是否有活跃会话
         to_delete = []
+        active_sessions = []
         for item, session_id in list(self.checked_sessions.items()):
-            session = next((s for s in self.current_sessions
-                            if s.get('sessionId') == session_id), None)
-            if session:
-                to_delete.append((session_id, session.get('project', 'N/A')))
+            # 检查是否是活跃会话
+            if session_id in self.active_sessions:
+                session = next((s for s in self.current_sessions
+                                if s.get('sessionId') == session_id), None)
+                if session:
+                    active_sessions.append(session_id)
+            else:
+                session = next((s for s in self.current_sessions
+                                if s.get('sessionId') == session_id), None)
+                if session:
+                    to_delete.append((session_id, session.get('project', 'N/A')))
+
+        # 如果有活跃会话被选中，显示警告
+        if active_sessions:
+            messagebox.showwarning("操作限制",
+                f"⚠️ 检测到 {len(active_sessions)} 个活跃会话无法删除：\n\n" +
+                "\n".join([f"  • {sid[:20]}..." for sid in active_sessions[:3]]) +
+                (f"\n  ... 还有 {len(active_sessions) - 3} 个" if len(active_sessions) > 3 else "") +
+                "\n\n请等待会话结束后再进行删除操作。")
+
+        # 如果没有可删除的会话，直接返回
+        if not to_delete:
+            return
 
         # 收集删除预览信息
         previews = []
