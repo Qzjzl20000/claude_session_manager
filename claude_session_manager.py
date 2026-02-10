@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Claude 会话管理器 v2.3
+Claude 会话管理器 v2.4
 用于管理 Claude Code 的历史对话记录
 """
 
 import json
 import shutil
+import re
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 
@@ -26,7 +27,9 @@ class SessionData:
         self.session_env_dir = self.claude_dir / 'session-env'
         self.file_history_dir = self.claude_dir / 'file-history'
         self.todos_dir = self.claude_dir / 'todos'
+        self.shell_snapshots_dir = self.claude_dir / 'shell-snapshots'
         self.sessions = []
+        self.active_session_ids = set()
 
     def load_sessions(self):
         """加载所有会话记录"""
@@ -46,6 +49,56 @@ class SessionData:
                         continue
 
         return self.sessions
+
+    def get_active_sessions(self, minutes: int = 10) -> set:
+        """获取最近 N 分钟内活跃的 Session ID"""
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(minutes=minutes)
+        cutoff_ts = cutoff.timestamp()
+
+        active = set()
+
+        # 方法1: 检查 debug 文件修改时间
+        if self.debug_dir.exists():
+            for debug_file in self.debug_dir.glob("*.txt"):
+                try:
+                    mtime = debug_file.stat().st_mtime
+                    if mtime > cutoff_ts:
+                        sid = debug_file.stem
+                        active.add(sid)
+                except:
+                    pass
+
+        # 方法2: 检查对话文件最后消息时间
+        if self.projects_dir.exists():
+            for project_dir in self.projects_dir.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                for conv_file in project_dir.glob("*.jsonl"):
+                    try:
+                        last_ts = 0
+                        with open(conv_file, 'r') as f:
+                            for line in f:
+                                if line.strip():
+                                    try:
+                                        msg = json.loads(line)
+                                        ts_str = msg.get('timestamp', '')
+                                        if ts_str:
+                                            dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                                            ts = dt.timestamp()
+                                            if ts > last_ts:
+                                                last_ts = ts
+                                    except:
+                                        pass
+
+                        if last_ts > cutoff_ts:
+                            sid = conv_file.stem
+                            active.add(sid)
+                    except:
+                        pass
+
+        self.active_session_ids = active
+        return active
 
     def get_all_session_ids(self) -> set:
         """从 history.jsonl 获取所有有效的 sessionId"""
@@ -461,7 +514,7 @@ class SessionManagerApp:
         paned.add(left_frame, weight=3)
 
         # 表格
-        columns = ("check", "row_id", "display", "file_type", "time",
+        columns = ("check", "row_id", "status", "display", "file_type", "time",
                    "filesize", "project", "session_id")
         self.tree = ttk.Treeview(left_frame,
                                  columns=columns,
@@ -471,6 +524,7 @@ class SessionManagerApp:
         # 设置列
         self.tree.heading("check", text="✓")
         self.tree.heading("row_id", text="行号")
+        self.tree.heading("status", text="状态")
         self.tree.heading("display", text="对话")
         self.tree.heading("file_type", text="文件类型")
         self.tree.heading("time", text="时间")
@@ -480,12 +534,13 @@ class SessionManagerApp:
 
         self.tree.column("check", width=40, anchor="center")
         self.tree.column("row_id", width=50, anchor="center")
-        self.tree.column("display", width=260)
+        self.tree.column("status", width=90, anchor="center")
+        self.tree.column("display", width=230)
         self.tree.column("file_type", width=90, anchor="center")
         self.tree.column("time", width=140)
         self.tree.column("filesize", width=90, anchor="center")
-        self.tree.column("project", width=200)
-        self.tree.column("session_id", width=170)
+        self.tree.column("project", width=180)
+        self.tree.column("session_id", width=150)
 
         # 滚动条
         scrollbar_y = ttk.Scrollbar(left_frame,
@@ -583,6 +638,8 @@ class SessionManagerApp:
     def load_data(self):
         """加载数据"""
         self.data.load_sessions()
+        # 检测活跃的 Session
+        self.active_sessions = self.data.get_active_sessions(minutes=10)
         self.update_session_list()
         self.update_stats()
 
